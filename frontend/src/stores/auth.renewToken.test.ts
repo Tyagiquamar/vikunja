@@ -1,3 +1,5 @@
+import {queryClient} from '@/client/queryClient'
+import {accountKeys} from '@/client/queries/account'
 vi.mock('@/client/generated', () => ({authLogin: httpPostMock, authLogout: httpPostMock, tokenRenew: httpPostMock, userShow: vi.fn(async () => ({data: {}}))}))
 import {describe, it, expect, beforeEach, vi} from 'vitest'
 import {setActivePinia, createPinia} from 'pinia'
@@ -25,9 +27,13 @@ vi.mock('@/router', () => ({
 	default: {push: routerPushMock},
 }))
 
-vi.mock('@/client/queryClient', () => ({
-	queryClient: {clear: queryClientClearMock},
-}))
+vi.mock('@/client/queryClient', async () => {
+ const {QueryClient} = await import('@tanstack/vue-query')
+ const queryClient = new QueryClient({defaultOptions: {queries: {retry: false}}})
+ const clear = queryClient.clear.bind(queryClient)
+ queryClient.clear = () => {clear(); queryClientClearMock()}
+ return {queryClient}
+})
 
 vi.mock('@/composables/useWebSocket', () => ({
 	useWebSocket: () => ({
@@ -98,7 +104,7 @@ describe('auth store renewToken retry (issue #2863)', () => {
 			id: 1,
 			type: AUTH_TYPES.USER,
 			exp: Math.floor(Date.now() / 1000) - 60,
-		} as never, false)
+		} as never)
 	}
 
 	it('does NOT log out when the first refresh fails but the retry succeeds', async () => {
@@ -163,7 +169,7 @@ describe('auth store logout query lifecycle', () => {
 
 	it('clears server data before navigating away', async () => {
 		const store = useAuthStore()
-		store.setUser({id: 1, type: AUTH_TYPES.USER} as never, false)
+		store.setUser({id: 1, type: AUTH_TYPES.USER} as never)
 		queryClientClearMock.mockReset()
 
 		await store.logout()
@@ -175,7 +181,7 @@ describe('auth store logout query lifecycle', () => {
 	it('clears browser data after reactive logout cleanup', async () => {
 		const store = useAuthStore()
 		store.setAuthenticated(true)
-		store.setUser({id: 1, type: AUTH_TYPES.USER} as never, false)
+		store.setUser({id: 1, type: AUTH_TYPES.USER} as never)
 		queryClientClearMock.mockReset()
 		localStorage.setItem('projectHistory', '[{"id":1}]')
 
@@ -206,7 +212,7 @@ describe('auth store query identity lifecycle', () => {
 	})
 
 	async function seedIdentity(id: number, type: AUTH_TYPES) {
-		useAuthStore().setUser({id, type} as never, false)
+		useAuthStore().setUser({id, type} as never)
 		await nextTick()
 		queryClientClearMock.mockReset()
 	}
@@ -214,7 +220,7 @@ describe('auth store query identity lifecycle', () => {
 	it('clears server data when changing users', async () => {
 		await seedIdentity(1, AUTH_TYPES.USER)
 
-		useAuthStore().setUser({id: 2, type: AUTH_TYPES.USER} as never, false)
+		useAuthStore().setUser({id: 2, type: AUTH_TYPES.USER} as never)
 		await nextTick()
 
 		expect(queryClientClearMock).toHaveBeenCalledOnce()
@@ -223,10 +229,23 @@ describe('auth store query identity lifecycle', () => {
 	it('clears server data when changing from user to link share', async () => {
 		await seedIdentity(1, AUTH_TYPES.USER)
 
-		useAuthStore().setUser({id: 1, type: AUTH_TYPES.LINK_SHARE} as never, false)
+		useAuthStore().setUser({id: 1, type: AUTH_TYPES.LINK_SHARE} as never)
 		await nextTick()
 
 		expect(queryClientClearMock).toHaveBeenCalledOnce()
+	})
+
+	it('subscribes to the next account after clearing the previous identity', async () => {
+		const store = useAuthStore()
+		await seedIdentity(1, AUTH_TYPES.USER)
+		queryClient.setQueryData(accountKeys.user(1), {id: 1, name: 'First'})
+		await nextTick()
+		expect(store.info?.name).toBe('First')
+		store.setUser({id: 2, type: AUTH_TYPES.USER} as never)
+		queryClient.setQueryData(accountKeys.user(2), {id: 2, name: 'Second'})
+		await nextTick()
+		expect(store.info?.name).toBe('Second')
+		expect(queryClient.getQueryData(accountKeys.user(1))).toBeUndefined()
 	})
 
 	it('preserves server data when authentication fails without an identity transition', async () => {
@@ -242,7 +261,7 @@ describe('auth store query identity lifecycle', () => {
 	it('preserves server data when renewing the same identity', async () => {
 		await seedIdentity(1, AUTH_TYPES.USER)
 
-		useAuthStore().setUser({id: 1, type: AUTH_TYPES.USER, exp: 42} as never, false)
+		useAuthStore().setUser({id: 1, type: AUTH_TYPES.USER, exp: 42} as never)
 		await nextTick()
 
 		expect(queryClientClearMock).not.toHaveBeenCalled()
